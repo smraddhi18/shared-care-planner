@@ -1,0 +1,70 @@
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DB_ENGINE: postgres
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_NAME: care
+    DB_USER: care
+    DB_PASSWORD: ${DB_PASSWORD:-local-care-password}
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CACHE_URL: redis://redis:6379/1
+    EMAIL_HOST: mailpit
+    EMAIL_PORT: 1025
+    PUBLIC_BASE_URL: http://localhost:8000
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: care
+      POSTGRES_USER: care
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-local-care-password}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U care -d care"]
+      interval: 5s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ['127.0.0.1:8025:8025']
+  migrate:
+    <<: *app
+    command: python manage.py migrate --noinput
+    restart: 'no'
+  web:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    ports: ['127.0.0.1:8000:8000']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz/', timeout=3)"]
+      interval: 15s
+      retries: 10
+  worker:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    command: celery -A config worker --loglevel=INFO --concurrency=2
+  scheduler:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    command: celery -A config beat --loglevel=INFO
+volumes:
+  pgdata:
+  redisdata:
